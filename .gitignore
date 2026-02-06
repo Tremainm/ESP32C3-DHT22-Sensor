@@ -1,0 +1,92 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+.directory
+
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+
+.vscode/
+.clangd/
+.ccls-cache/
+compile_commands.json
+
+# =========================
+# Build Artifacts
+# =========================
+build/
+**/build/
+
+*.o
+*.a
+*.out
+*.elf
+*.map
+*.bin
+*.exe
+
+flasher_args.json
+
+# =========================
+# ESP-IDF / ESP-Matter
+# =========================
+managed_components/
+.espressif/
+components/.idf/
+**/components/.idf/
+
+sdkconfig.old
+
+# Matter / ZAP
+chip_build/
+out/
+.zap/
+.zap-generated/
+gen/
+
+# =========================
+# CMake
+# =========================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+
+venv/
+.venv/
+env/
+
+.idf_pycache/
+.idf_tools/
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# User Files
+# =========================
+*.user
+*.workspace
+*.suo
+*.sln.docstates
