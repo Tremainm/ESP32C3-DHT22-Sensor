@@ -19,11 +19,21 @@
 #include <app_reset.h>
 #include <common_macros.h>
 
-drivers implemented by this example
-#include <drivers/shtc3.h>
-#include <drivers/pir.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "dht.h"
 
 static const char *TAG = "app_main";
+
+#define DHT_GPIO GPIO_NUM_2
+
+// DHT22 is often referred to as AM2302/AM2301 in libs.
+// If this doesn't compile, open managed_components/esp-idf-lib__dht/include/dht.h
+// and choose the correct type macro from there.
+#define DHT_TYPE DHT_TYPE_AM2301
+
+static uint16_t g_temp_endpoint_id = 0;
+static uint16_t g_humidity_endpoint_id = 0;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -68,20 +78,26 @@ static void humidity_sensor_notification(uint16_t endpoint_id, float humidity, v
     });
 }
 
-static void occupancy_sensor_notification(uint16_t endpoint_id, bool occupancy, void *user_data)
+static void dht_task(void *pvParameters)
 {
-    // schedule the attribute update so that we can report it from matter thread
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, occupancy]() {
-        attribute_t * attribute = attribute::get(endpoint_id,
-                                                 OccupancySensing::Id,
-                                                 OccupancySensing::Attributes::Occupancy::Id);
+    float temperature = 0.0f;
+    float humidity = 0.0f;
 
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.b = occupancy;
+    while (true) {
+        esp_err_t err = dht_read_float_data(DHT_TYPE, DHT_GPIO, &humidity, &temperature);
 
-        attribute::update(endpoint_id, OccupancySensing::Id, OccupancySensing::Attributes::Occupancy::Id, &val);
-    });
+        if (err == ESP_OK) {
+            temp_sensor_notification(g_temp_endpoint_id, temperature, nullptr);
+            humidity_sensor_notification(g_humidity_endpoint_id, humidity, nullptr);
+
+            ESP_LOGI(TAG, "DHT22: T=%.2fC H=%.2f%%", temperature, humidity);
+        } else {
+            ESP_LOGE(TAG, "DHT22 read failed: %s", esp_err_to_name(err));
+        }
+
+        // DHT22: don’t poll faster than ~2s
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
 }
 
 static esp_err_t factory_reset_button_register()
@@ -172,43 +188,13 @@ extern "C" void app_main()
     temperature_sensor::config_t temp_sensor_config;
     endpoint_t * temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
+    g_temp_endpoint_id = endpoint::get_id(temp_sensor_ep);
 
     // add the humidity sensor device
     humidity_sensor::config_t humidity_sensor_config;
     endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
-
-    // initialize temperature and humidity sensor driver (shtc3)
-    static shtc3_sensor_config_t shtc3_config = {
-        .temperature = {
-            .cb = temp_sensor_notification,
-            .endpoint_id = endpoint::get_id(temp_sensor_ep),
-        },
-        .humidity = {
-            .cb = humidity_sensor_notification,
-            .endpoint_id = endpoint::get_id(humidity_sensor_ep),
-        },
-    };
-    err = shtc3_sensor_init(&shtc3_config);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize temperature sensor driver"));
-
-    // add the occupancy sensor
-    occupancy_sensor::config_t occupancy_sensor_config;
-    occupancy_sensor_config.occupancy_sensing.occupancy_sensor_type =
-        chip::to_underlying(OccupancySensing::OccupancySensorTypeEnum::kPir);
-    occupancy_sensor_config.occupancy_sensing.occupancy_sensor_type_bitmap =
-        chip::to_underlying(OccupancySensing::OccupancySensorTypeBitmap::kPir);
-
-    endpoint_t * occupancy_sensor_ep = occupancy_sensor::create(node, &occupancy_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(occupancy_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create occupancy_sensor endpoint"));
-
-    // initialize occupancy sensor driver (pir)
-    static pir_sensor_config_t pir_config = {
-        .cb = occupancy_sensor_notification,
-        .endpoint_id = endpoint::get_id(occupancy_sensor_ep),
-    };
-    err = pir_sensor_init(&pir_config);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize occupancy sensor driver"));
+    g_humidity_endpoint_id = endpoint::get_id(humidity_sensor_ep);
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     /* Set OpenThread platform config */
@@ -223,4 +209,7 @@ extern "C" void app_main()
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+
+    /* Start DHT polling task */
+    xTaskCreate(dht_task, "dht_task", 4096, nullptr, 5, nullptr);
 }
