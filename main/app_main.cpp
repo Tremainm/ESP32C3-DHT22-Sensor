@@ -23,6 +23,8 @@
 #include "freertos/task.h"
 #include "dht.h"
 
+#include "ml_context.h"
+
 static const char *TAG = "app_main";
 
 #define DHT_GPIO GPIO_NUM_2
@@ -34,6 +36,14 @@ static const char *TAG = "app_main";
 
 static uint16_t g_temp_endpoint_id = 0;
 static uint16_t g_humidity_endpoint_id = 0;
+
+// Vendor-specific cluster for context classification result.
+// Cluster IDs 0xFC00–0xFFFE are reserved for manufacturer use in Matter.
+static constexpr uint32_t kContextClusterId = 0xFC00;
+static constexpr uint32_t kContextAttributeId = 0x0000;
+
+// Will be set to the same endpoint as the temperature sensor
+static uint16_t g_context_endpoint_id = 0;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -167,6 +177,32 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
 {
     // Since this is just a sensor and we don't expect any writes on our temperature sensor,
     // so, return success.
+    return ESP_OK;
+}
+
+static esp_err_t add_context_cluster(endpoint_t *ep)
+{
+    // Create a vendor-specific cluster on the temperature sensor endpoint.
+    // CLUSTER_FLAG_SERVER means this device is the data source (server side).
+    cluster_t *cluster = cluster::create(ep, kContextClusterId, CLUSTER_FLAG_SERVER);
+    if (!cluster) {
+        ESP_LOGE(TAG, "Failed to create context cluster");
+        return ESP_FAIL;
+    }
+
+    // Single float attribute to hold the predicted class ID:
+    // 0.0 = HEATING_ON, 1.0 = NORMAL, 2.0 = WINDOW_OPEN
+    // Initialised to 1.0 (NORMAL) as a safe default.
+    esp_matter_attr_val_t init_val = esp_matter_float(1.0f);
+    attribute_t *attr = attribute::create(cluster, kContextAttributeId,
+                                          ATTRIBUTE_FLAG_NONE, init_val);
+    if (!attr) {
+        ESP_LOGE(TAG, "Failed to create context attribute");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Context cluster 0x%04" PRIx32 " created on endpoint %d",
+             kContextClusterId, endpoint::get_id(ep));
     return ESP_OK;
 }
 
