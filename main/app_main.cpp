@@ -101,6 +101,20 @@ static void dht_task(void *pvParameters)
             humidity_sensor_notification(g_humidity_endpoint_id, humidity, nullptr);
 
             ESP_LOGI(TAG, "DHT22: T=%.2fC H=%.2f%%", temperature, humidity);
+
+            // Run TFLM context classifier and update the custom attribute.
+            // ScheduleLambda posts the attribute update onto the Matter thread —
+            // attribute::update must not be called from a FreeRTOS task directly.
+            int context = ml_context_run(temperature, humidity);
+            if (context >= 0) {
+                chip::DeviceLayer::SystemLayer().ScheduleLambda([context]() {
+                    esp_matter_attr_val_t val = esp_matter_float(static_cast<float>(context));
+                    attribute::update(g_context_endpoint_id,
+                                      kContextClusterId,
+                                      kContextAttributeId,
+                                      &val);
+                });
+            }
         } else {
             ESP_LOGE(TAG, "DHT22 read failed: %s", esp_err_to_name(err));
         }
