@@ -240,6 +240,14 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
     g_temp_endpoint_id = endpoint::get_id(temp_sensor_ep);
 
+    esp_err_t ctx_err = add_context_cluster(temp_sensor_ep);
+    ABORT_APP_ON_FAILURE(ctx_err == ESP_OK, ESP_LOGE(TAG, "Failed to add context cluster"));
+    g_context_endpoint_id = g_temp_endpoint_id;
+
+    // Initialise TFLM — after Matter node is configured, before esp_matter::start()
+    bool ml_ok = ml_context_init();
+    ABORT_APP_ON_FAILURE(ml_ok, ESP_LOGE(TAG, "Failed to initialise TFLM"));
+
     // add the humidity sensor device
     humidity_sensor::config_t humidity_sensor_config;
     endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
