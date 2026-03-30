@@ -118,15 +118,25 @@ static void dht_task(void *pvParameters)
                                       kContextAttributeId,
                                       &val);
 
-                    // Workaround: also write to MinMeasuredValue (0x0001) on the humidity
-                    // endpoint. This is a standard attribute the SDK passes through without
-                    // filtering. The Pi backend reads this to get the context class until
-                    // the upstream SDK bug is resolved.
-                    esp_matter_attr_val_t workaround_val = esp_matter_uint16(static_cast<uint16_t>(context));
-                    attribute::update(g_humidity_endpoint_id,
-                                    RelativeHumidityMeasurement::Id,
-                                    RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id,
-                                    &workaround_val);
+                    // Workaround: write context class to MinMeasuredValue (0x0001) on the
+                    // humidity endpoint using the same get/modify/update pattern as
+                    // MeasuredValue — this ensures the subscription engine reports it.
+                    attribute_t *min_attr = attribute::get(
+                        g_humidity_endpoint_id,
+                        RelativeHumidityMeasurement::Id,
+                        RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id
+                    );
+                    if (min_attr) {
+                        esp_matter_attr_val_t workaround_val = esp_matter_invalid(NULL);
+                        attribute::get_val(min_attr, &workaround_val);
+                        workaround_val.val.u16 = static_cast<uint16_t>(context);
+                        attribute::update(g_humidity_endpoint_id,
+                                        RelativeHumidityMeasurement::Id,
+                                        RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id,
+                                        &workaround_val);
+                    } else {
+                        ESP_LOGE("app_main", "MinMeasuredValue attribute not found");
+                    }
                 });
             }
         } else {
@@ -272,10 +282,6 @@ extern "C" void app_main()
 
     // add the humidity sensor device
     humidity_sensor::config_t humidity_sensor_config;
-    // Initialise min_measured_value to a valid value so the attribute exists
-    // and can be repurposed to carry the TinyML context class (0, 1, or 2)
-    humidity_sensor_config.relative_humidity_measurement.min_measured_value = 1;
-    
     endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
     g_humidity_endpoint_id = endpoint::get_id(humidity_sensor_ep);
