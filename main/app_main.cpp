@@ -109,11 +109,24 @@ static void dht_task(void *pvParameters)
             int context = ml_context_run(temperature, humidity);
             if (context >= 0) {
                 chip::DeviceLayer::SystemLayer().ScheduleLambda([context]() {
+                    // Primary: update vendor cluster (0xFC00) — correct approach per Matter spec.
+                    // Currently skipped by python-matter-server 8.1.0 due to a known CHIP SDK
+                    // bug (connectedhomeip issue #32371) which rejects vendor cluster IDs.
                     esp_matter_attr_val_t val = esp_matter_float(static_cast<float>(context));
                     attribute::update(g_context_endpoint_id,
                                       kContextClusterId,
                                       kContextAttributeId,
                                       &val);
+
+                    // Workaround: also write to MinMeasuredValue (0x0001) on the humidity
+                    // endpoint. This is a standard attribute the SDK passes through without
+                    // filtering. The Pi backend reads this to get the context class until
+                    // the upstream SDK bug is resolved.
+                    esp_matter_attr_val_t workaround_val = esp_matter_uint16(static_cast<uint16_t>(context));
+                    attribute::update(g_humidity_endpoint_id,
+                                    RelativeHumidityMeasurement::Id,
+                                    RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id,
+                                    &workaround_val);
                 });
             }
         } else {
@@ -259,6 +272,10 @@ extern "C" void app_main()
 
     // add the humidity sensor device
     humidity_sensor::config_t humidity_sensor_config;
+    // Initialise min_measured_value to a valid value so the attribute exists
+    // and can be repurposed to carry the TinyML context class (0, 1, or 2)
+    humidity_sensor_config.relative_humidity_measurement.min_measured_value = 1;
+    
     endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
     g_humidity_endpoint_id = endpoint::get_id(humidity_sensor_ep);
