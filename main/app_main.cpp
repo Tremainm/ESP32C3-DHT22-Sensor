@@ -48,6 +48,7 @@ static uint16_t g_context_endpoint_id = 0;
 using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
+using namespace esp_matter::cluster;
 using namespace chip::app::Clusters;
 
 // Application cluster specification, 7.18.2.11. Temperature
@@ -203,6 +204,14 @@ static esp_err_t add_context_cluster(endpoint_t *ep)
         ESP_LOGE(TAG, "Failed to create context cluster");
         return ESP_FAIL;
     }
+
+    // Add mandatory global attributes that every Matter cluster must have.
+    // The low-level cluster::create() does NOT add these automatically —
+    // only the higher-level standard cluster wrappers do.
+    // Without ClusterRevision (0xFFFD) and FeatureMap (0xFFFC), the CHIP SDK
+    // rejects the cluster as malformed and drops all its attribute reports.
+    global::attribute::create_cluster_revision(cluster, 1);
+    global::attribute::create_feature_map(cluster, 0);
 
     // Single float attribute to hold the predicted class ID:
     // 0.0 = HEATING_ON, 1.0 = NORMAL, 2.0 = WINDOW_OPEN
