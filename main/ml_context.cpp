@@ -13,10 +13,10 @@ static const char *TAG = "ml_context";
 // ── Scaler constants from training output ─────────────────────────────────────
 // These must exactly match what the training script printed.
 // MinMaxScaler formula: scaled = (x * scale_) + min_
-static constexpr float SCALER_MIN_TEMP   = -1.13274336f;
-static constexpr float SCALER_MIN_HUM    = -1.17711172f;
-static constexpr float SCALER_SCALE_TEMP =  0.08849558f;
-static constexpr float SCALER_SCALE_HUM  =  0.02724796f;
+static constexpr float SCALER_MIN_TEMP   = -0.68181818f;
+static constexpr float SCALER_MIN_HUM    = -0.89473684f;
+static constexpr float SCALER_SCALE_TEMP =  0.05681818f;
+static constexpr float SCALER_SCALE_HUM  =  0.02288330f;
 
 // ── Class labels ──────────────────────────────────────────────────────────────
 // LabelEncoder sorts alphabetically, confirmed from training output:
@@ -108,19 +108,6 @@ int ml_context_run(float temperature, float humidity)
     // The class with the highest value has the highest probability.
     // We compare raw int8 values directly — no dequantisation needed
     // since we only care about which index is largest, not the actual probability.
-
-    // int8_t max_val = s_output->data.int8[0];
-    // int predicted = 0;
-    // for (int i = 1; i < kNumClasses; i++) {
-    //     if (s_output->data.int8[i] > max_val) {
-    //         max_val = s_output->data.int8[i];
-    //         predicted = i;
-    //     }
-    // }
-
-    // ESP_LOGI(TAG, "Context inference: %s (class %d) | T_scaled=%.4f H_scaled=%.4f",
-    //          kLabels[predicted], predicted, t_scaled, h_scaled);
-
     float out_scale = s_output->params.scale;
     int32_t out_zero_point = s_output->params.zero_point;
 
