@@ -23,6 +23,8 @@
 #include "freertos/task.h"
 #include "dht.h"
 
+#include "ml_context.h"
+
 static const char *TAG = "app_main";
 
 #define DHT_GPIO GPIO_NUM_2
@@ -35,9 +37,18 @@ static const char *TAG = "app_main";
 static uint16_t g_temp_endpoint_id = 0;
 static uint16_t g_humidity_endpoint_id = 0;
 
+// Vendor-specific cluster for context classification result.
+// Cluster IDs 0xFC00–0xFFFE are reserved for manufacturer use in Matter.
+static constexpr uint32_t kContextClusterId = 0xFC00;
+static constexpr uint32_t kContextAttributeId = 0x0000;
+
+// Will be set to the same endpoint as the temperature sensor
+static uint16_t g_context_endpoint_id = 0;
+
 using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
+using namespace esp_matter::cluster;
 using namespace chip::app::Clusters;
 
 // Application cluster specification, 7.18.2.11. Temperature
@@ -91,6 +102,43 @@ static void dht_task(void *pvParameters)
             humidity_sensor_notification(g_humidity_endpoint_id, humidity, nullptr);
 
             ESP_LOGI(TAG, "DHT22: T=%.2fC H=%.2f%%", temperature, humidity);
+
+            // Run TFLM context classifier and update the custom attribute.
+            // ScheduleLambda posts the attribute update onto the Matter thread —
+            // attribute::update must not be called from a FreeRTOS task directly.
+            int context = ml_context_run(temperature, humidity);
+            if (context >= 0) {
+                chip::DeviceLayer::SystemLayer().ScheduleLambda([context]() {
+                    // Primary: update vendor cluster (0xFC00) — correct approach per Matter spec.
+                    // Currently skipped by python-matter-server 8.1.0 due to a known CHIP SDK
+                    // bug (connectedhomeip issue #32371) which rejects vendor cluster IDs.
+                    esp_matter_attr_val_t val = esp_matter_float(static_cast<float>(context));
+                    attribute::update(g_context_endpoint_id,
+                                      kContextClusterId,
+                                      kContextAttributeId,
+                                      &val);
+
+                    // Workaround: write context class to MinMeasuredValue (0x0001) on the
+                    // humidity endpoint using the same get/modify/update pattern as
+                    // MeasuredValue — this ensures the subscription engine reports it.
+                    attribute_t *min_attr = attribute::get(
+                        g_humidity_endpoint_id,
+                        RelativeHumidityMeasurement::Id,
+                        RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id
+                    );
+                    if (min_attr) {
+                        esp_matter_attr_val_t workaround_val = esp_matter_invalid(NULL);
+                        attribute::get_val(min_attr, &workaround_val);
+                        workaround_val.val.u16 = static_cast<uint16_t>(context);
+                        attribute::update(g_humidity_endpoint_id,
+                                        RelativeHumidityMeasurement::Id,
+                                        RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id,
+                                        &workaround_val);
+                    } else {
+                        ESP_LOGE("app_main", "MinMeasuredValue attribute not found");
+                    }
+                });
+            }
         } else {
             ESP_LOGE(TAG, "DHT22 read failed: %s", esp_err_to_name(err));
         }
@@ -170,6 +218,40 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
     return ESP_OK;
 }
 
+static esp_err_t add_context_cluster(endpoint_t *ep)
+{
+    // Create a vendor-specific cluster on the temperature sensor endpoint.
+    // CLUSTER_FLAG_SERVER means this device is the data source (server side).
+    cluster_t *cluster = cluster::create(ep, kContextClusterId, CLUSTER_FLAG_SERVER);
+    if (!cluster) {
+        ESP_LOGE(TAG, "Failed to create context cluster");
+        return ESP_FAIL;
+    }
+
+    // Add mandatory global attributes that every Matter cluster must have.
+    // The low-level cluster::create() does NOT add these automatically —
+    // only the higher-level standard cluster wrappers do.
+    // Without ClusterRevision (0xFFFD) and FeatureMap (0xFFFC), the CHIP SDK
+    // rejects the cluster as malformed and drops all its attribute reports.
+    global::attribute::create_cluster_revision(cluster, 1);
+    global::attribute::create_feature_map(cluster, 0);
+
+    // Single float attribute to hold the predicted class ID:
+    // 0.0 = HEATING_ON, 1.0 = NORMAL, 2.0 = WINDOW_OPEN
+    // Initialised to 1.0 (NORMAL) as a safe default.
+    esp_matter_attr_val_t init_val = esp_matter_float(1.0f);
+    attribute_t *attr = attribute::create(cluster, kContextAttributeId,
+                                          ATTRIBUTE_FLAG_NONE, init_val);
+    if (!attr) {
+        ESP_LOGE(TAG, "Failed to create context attribute");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Context cluster 0x%04" PRIx32 " created on endpoint %d",
+             kContextClusterId, endpoint::get_id(ep));
+    return ESP_OK;
+}
+
 extern "C" void app_main()
 {
     /* Initialize the ESP NVS layer */
@@ -189,6 +271,14 @@ extern "C" void app_main()
     endpoint_t * temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
     g_temp_endpoint_id = endpoint::get_id(temp_sensor_ep);
+
+    esp_err_t ctx_err = add_context_cluster(temp_sensor_ep);
+    ABORT_APP_ON_FAILURE(ctx_err == ESP_OK, ESP_LOGE(TAG, "Failed to add context cluster"));
+    g_context_endpoint_id = g_temp_endpoint_id;
+
+    // Initialise TFLM — after Matter node is configured, before esp_matter::start()
+    bool ml_ok = ml_context_init();
+    ABORT_APP_ON_FAILURE(ml_ok, ESP_LOGE(TAG, "Failed to initialise TFLM"));
 
     // add the humidity sensor device
     humidity_sensor::config_t humidity_sensor_config;

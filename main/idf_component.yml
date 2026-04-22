@@ -8,3 +8,5 @@ dependencies:
     version: "^3"
   esp-idf-lib/dht: 
     version: "^1.0.0"
+  esp-tflite-micro:
+    version: "1.3.1"
