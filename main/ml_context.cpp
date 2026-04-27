@@ -13,10 +13,12 @@ static const char *TAG = "ml_context";
 // ── Scaler constants from training output ─────────────────────────────────────
 // These must exactly match what the training script printed.
 // MinMaxScaler formula: scaled = (x * scale_) + min_
-static constexpr float SCALER_MIN_TEMP   = -0.68181818f;
-static constexpr float SCALER_MIN_HUM    = -0.89473684f;
-static constexpr float SCALER_SCALE_TEMP =  0.05681818f;
-static constexpr float SCALER_SCALE_HUM  =  0.02288330f;
+
+// Used to normalize live sensor readings at inference and predict accurately
+static constexpr float SCALER_MIN_TEMP = -0.68181818f;
+static constexpr float SCALER_MIN_HUM = -0.89473684f;
+static constexpr float SCALER_SCALE_TEMP = 0.05681818f;
+static constexpr float SCALER_SCALE_HUM = 0.02288330f;
 
 // ── Class labels ──────────────────────────────────────────────────────────────
 // LabelEncoder sorts alphabetically, confirmed from training output:
@@ -49,7 +51,7 @@ bool ml_context_init()
     }
 
     // Register only the ops this model uses.
-    // The classifier needs FullyConnected (Dense layers), Relu, and Softmax.
+    // The classifier needs FullyConnected (Dense layers), Relu (clamps negative values to 0), and Softmax (coverts raw output scores to probabilities).
     // Explicitly listing ops avoids linking the entire TFLM op library,
     // keeping firmware flash usage down.
     static tflite::MicroMutableOpResolver<3> resolver;
@@ -57,19 +59,29 @@ bool ml_context_init()
     resolver.AddRelu();
     resolver.AddSoftmax();
 
-    // Allocate the interpreter statically so it doesn't go on the stack
-    static tflite::MicroInterpreter static_interpreter(
-        s_model, resolver, tensor_arena, kTensorArenaSize);
+    // Allocate the interpreter statically so it doesn't go on the stack (goes to static RAM (.bss))
+    // s_model: C array of model
+    // resolver: Op lookup - tells interpreter how to execute each node
+    // tensor_arena: RAM - where all tensors live at runtime
+    // kTensorArenaSize: 4KB arena bounds
+    static tflite::MicroInterpreter static_interpreter(s_model, resolver, tensor_arena, kTensorArenaSize);
     s_interpreter = &static_interpreter;
 
     // Allocate all input/output tensors inside the arena
+    // Fails if arena size is too small
     if (s_interpreter->AllocateTensors() != kTfLiteOk) {
         ESP_LOGE(TAG, "AllocateTensors() failed — arena may be too small");
         return false;
     }
 
-    s_input  = s_interpreter->input(0);
-    s_output = s_interpreter->output(0);
+    // TfLiteTensor points to a struct:
+    //      --> data.int8: pointer into the arena when tensor's values sit
+    //      --> params.scale & params.zero_point: quantisation metadata baked in for .tflite file (got from C model)
+    //
+    // s_interpreter->input(0) does a lookup internally when it's called. 
+    // ml_context_run() writes straight to s_input->data.int8 & read from s_output->data.int8[i]  
+    s_input = s_interpreter->input(0);      // temp + humidity packed together
+    s_output = s_interpreter->output(0);    // 3 class probabilities packed together
 
     ESP_LOGI(TAG, "TFLM context classifier init OK. Arena used: %d / %d bytes",
              s_interpreter->arena_used_bytes(), kTensorArenaSize);
@@ -85,6 +97,7 @@ int ml_context_run(float temperature, float humidity)
 
     // ── 1. Apply MinMaxScaler normalisation ───────────────────────────────────
     // Must exactly match sklearn's MinMaxScaler: X_scaled = X * scale_ + min_
+    // Normalizes to [-1, 1] range model was trained on
     float t_scaled = temperature * SCALER_SCALE_TEMP + SCALER_MIN_TEMP;
     float h_scaled = humidity * SCALER_SCALE_HUM  + SCALER_MIN_HUM;
 
@@ -92,12 +105,13 @@ int ml_context_run(float temperature, float humidity)
     // TFLite quantisation formula: q = float / scale + zero_point
     // scale and zero_point are embedded in the model by the TFLite converter
     // and read directly from the input tensor metadata.
-    float in_scale = s_input->params.scale;
-    int32_t in_zero_point = s_input->params.zero_point;
-    s_input->data.int8[0] = static_cast<int8_t>(t_scaled / in_scale + in_zero_point);
+    float in_scale = s_input->params.scale;                 // scale: how much 1 int step is worth in float terms (0.0078 -> each int8 unit = 0.0078 in float space)
+    int32_t in_zero_point = s_input->params.zero_point;     // zero_point: which int8 value represents float 0.0 (normally 0 but can be non-zero)
+    s_input->data.int8[0] = static_cast<int8_t>(t_scaled / in_scale + in_zero_point); // temp = 22.0 C -> becomes integer 72
     s_input->data.int8[1] = static_cast<int8_t>(h_scaled / in_scale + in_zero_point);
 
     // ── 3. Run inference ──────────────────────────────────────────────────────
+    // Run AND if result is not ok, error
     if (s_interpreter->Invoke() != kTfLiteOk) {
         ESP_LOGE(TAG, "Invoke() failed");
         return -1;
@@ -112,12 +126,12 @@ int ml_context_run(float temperature, float humidity)
     int32_t out_zero_point = s_output->params.zero_point;
 
     float max_prob = (s_output->data.int8[0] - out_zero_point) * out_scale;  
-    int predicted  = 0;
+    int predicted = 0;
 
     for (int i = 1; i < kNumClasses; i++) {
         float prob = (s_output->data.int8[i] - out_zero_point) * out_scale;
         if (prob > max_prob) {
-            max_prob  = prob;
+            max_prob = prob;
             predicted = i;
         }
     }
@@ -126,10 +140,4 @@ int ml_context_run(float temperature, float humidity)
             kLabels[predicted], predicted, max_prob);
 
     return predicted;
-}
-
-const char* ml_context_label(int class_id)
-{
-    if (class_id < 0 || class_id >= kNumClasses) return "UNKNOWN";
-    return kLabels[class_id];
 }

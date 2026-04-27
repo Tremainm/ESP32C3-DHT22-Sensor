@@ -11,7 +11,4 @@ bool ml_context_init();
 // Returns -1 on failure.
 int ml_context_run(float temperature, float humidity);
 
-// Convert integer class ID to human-readable string for logging.
-const char* ml_context_label(int class_id);
-
 #endif // !ML_CONTEXT_H
