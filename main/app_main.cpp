@@ -121,11 +121,9 @@ static void dht_task(void *pvParameters)
                     // Workaround: write context class to MinMeasuredValue (0x0001) on the
                     // humidity endpoint using the same get/modify/update pattern as
                     // MeasuredValue — this ensures the subscription engine reports it.
-                    attribute_t *min_attr = attribute::get(
-                        g_humidity_endpoint_id,
-                        RelativeHumidityMeasurement::Id,
-                        RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id
-                    );
+                    attribute_t *min_attr = attribute::get(g_humidity_endpoint_id,
+                                                           RelativeHumidityMeasurement::Id,
+                                                           RelativeHumidityMeasurement::Attributes::MinMeasuredValue::Id);
                     if (min_attr) {
                         esp_matter_attr_val_t workaround_val = esp_matter_invalid(NULL);
                         attribute::get_val(min_attr, &workaround_val);
@@ -156,6 +154,7 @@ static esp_err_t factory_reset_button_register()
     return app_reset_button_register(push_button);
 }
 
+// Opens commissioning if not already commissioned
 static void open_commissioning_window_if_necessary()
 {
     VerifyOrReturn(chip::Server::GetInstance().GetFabricTable().FabricCount() == 0);
