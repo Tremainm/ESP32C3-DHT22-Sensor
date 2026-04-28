@@ -1,12 +1,12 @@
 # ESP32-C3 DHT22 Matter Sensor with TFLite Micro Context Classifier
 
-An ESP32-C3 firmware that reads temperature and humidity from a DHT22 sensor, exposes them as standard Matter clusters, and runs an on-device TFLite Micro classifier to predict environmental context (heating on, normal, window open).
+An ESP32-C3 firmware that reads temperature and humidity from a DHT22 sensor, exposes them as standard Matter clusters, and runs an on-device TFLite Micro classifier to predict environmental context (heating on, normal, window open). This node is controlled by a Raspberry Pi Matter Controller Hub [here](https://github.com/Tremainm/PiHub-FYP2025) and has a sister LED node developed [here](https://github.com/Tremainm/ESP32C3-LED)
 
 ## What it does
 
 - Reads temperature and humidity from a DFRobot DHT22 module every 2 seconds
 - Exposes readings over Matter as standard `TemperatureMeasurement` and `RelativeHumidityMeasurement` clusters
-- Runs a quantised int8 TFLite Micro neural network on each reading to classify the environmental context into one of three classes:
+- Runs a quantised int8 TFLite Micro neural network trained [here](https://github.com/Tremainm/train_tinyml) on each reading to classify the environmental context into one of three classes:
   - `0` — HEATING_ON
   - `1` — NORMAL
   - `2` — WINDOW_OPEN
